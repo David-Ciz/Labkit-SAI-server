@@ -1,0 +1,56 @@
+name: labkit-sai
+services:
+  pytorch:
+    image: labkit-sai-pytorch:local
+    platform: linux/amd64
+    build:
+      context: .
+      args:
+        BACKEND: pytorch
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${LABKIT_BIND_ADDRESS:-127.0.0.1}:${LABKIT_PYTORCH_PORT:-8000}:8000"
+    volumes:
+      - type: bind
+        source: ./server-pytorch/secret.txt
+        target: /app/server-pytorch/secret.txt
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./server-MODELS
+        target: /app/server-MODELS
+        read_only: true
+        bind:
+          create_host_path: false
+      - pytorch-cache:/home/labkit/.cache
+  tensorflow:
+    profiles: [tensorflow]
+    image: labkit-sai-tensorflow:local
+    platform: linux/amd64
+    build:
+      context: .
+      args:
+        BACKEND: tensorflow
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${LABKIT_BIND_ADDRESS:-127.0.0.1}:${LABKIT_TENSORFLOW_PORT:-8001}:8000"
+    volumes:
+      - type: bind
+        source: ./server-tensorflow/secret.txt
+        target: /app/server-tensorflow/secret.txt
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./server-MODELS
+        target: /app/server-MODELS
+        read_only: true
+        bind:
+          create_host_path: false
+      - tensorflow-cache:/home/labkit/.cache
+volumes:
+  pytorch-cache:
+  tensorflow-cache:

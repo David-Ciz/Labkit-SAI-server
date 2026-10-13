@@ -1,0 +1,13 @@
+.git
+**/.pixi
+**/.venv
+**/__pycache__
+**/*.py[cod]
+**/secret.txt
+**/.env
+**/.env.*
+server-MODELS
+**/*.model
+**/*.model.pt
+**/*.pth
+**/*.pt
