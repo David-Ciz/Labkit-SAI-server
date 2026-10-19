@@ -47,7 +47,8 @@ class Sam2BoxSegmenter:
         return self
 
     # -- entry point 2 -------------------------------------------------------
-    def segment_box(self, x_min: float, y_min: float, x_max: float, y_max: float) -> np.ndarray:
+    def segment_box(self, x_min: float, y_min: float, x_max: float, y_max: float,
+                    positive_point=None) -> np.ndarray:
         """Segment the single object inside the box.
 
         Pixel coordinates, x = column, y = row (i.e. img[y, x]).
@@ -64,8 +65,14 @@ class Sam2BoxSegmenter:
 
         print("sam2: prompt box:",[x0, y0, x1, y1])
         box = np.array([x0, y0, x1, y1], dtype=np.float32)
+        point_args = {}
+        if positive_point is not None:
+            point = np.asarray(positive_point, dtype=np.float32)
+            if point.shape != (2,) or not np.isfinite(point).all() or not (0 <= point[0] < w and 0 <= point[1] < h):
+                raise ValueError("Foreground point must be inside the image")
+            point_args = {"point_coords": point[None, :], "point_labels": np.array([1], dtype=np.int32)}
         with torch.inference_mode(), self._ctx():
-            masks, scores, logits = self.predictor.predict(box=box, multimask_output=False)
+            masks, scores, logits = self.predictor.predict(box=box, multimask_output=False, **point_args)
 
         # predict() returns float 0.0 or 1.0 masks
         return masks[0].astype('uint16')

@@ -116,3 +116,11 @@ python -m pytest tests -q
 The suite covers request validation/authentication, selected outputs, ROI mapping, target ambiguity, one/zero candidates, backend/stage failures, missing/unseen inputs and concurrent model selection. Synthetic test doubles verify plumbing; they are not learned-method results.
 
 `scripts/verify_frozen_parity.py` compares the recovered QA implementation with its original source and Deep Sets outputs with a saved candidate table. It takes explicit artifact/source paths and writes a JSON report; it performs no fitting or model downloads. Before a scientific pilot, also verify the recovered ranker and the complete matching inference bundle, then run the fixed image batch with independent reference masks only in the external evaluator.
+
+## Isolated target-validation branch
+
+`codex/labkit-target-validation` adds two rules without changing the original running service or frozen artifacts. An explicitly supplied `target_point_xy` is a foreground assertion: a prediction missing it is rejected, and a single foreground label cannot override that assertion. Without an explicit point, the box-center fallback remains, but a fragmented binary mask is marked ambiguous rather than treated as one unambiguous instance. Requested source segmentations remain available even if target matching fails.
+
+The combined SAM2 path forwards an explicit point as a positive prompt in addition to the box. A derived box center is not automatically promoted to a positive point. Legacy box-only segmentation calls retain their existing behavior. Point inclusion is a necessary correspondence check when the user asserts foreground; it is not a guarantee of accurate boundaries or mask quality. The diagnostic point-only additions already showed that poor masks can contain the point. The cached-mask rejection result (0.6683) is not an accuracy claim for this changed prompt path.
+
+The research grouping correction lives separately on `codex/ensemble-candidate-context-v2` in the silver-truth repository. Its version-2 weights require new training and an explicitly compatible export/adapter; the historical bundle is not relabelled or overwritten. The QA checkpoint's poor stress-control behavior is not fixed by these engineering changes.

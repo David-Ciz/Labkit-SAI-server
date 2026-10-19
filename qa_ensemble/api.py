@@ -63,7 +63,10 @@ def create_router(methods, lock: RLock, pipelines=None):
         if fun is None:
             raise ValueError("Method is unavailable")
         x0, y0, x1, y1 = request.region.target_box_xyxy
-        return fun(image, (x0, y0, x1-1, y1-1))
+        prompt = (x0, y0, x1-1, y1-1)
+        if method.startswith("sam2.") and request.region.target_point_xy is not None:
+            prompt += request.region.target_point_xy
+        return fun(image, prompt)
 
     service = EnsembleService(segment, registry, info, lock)
 

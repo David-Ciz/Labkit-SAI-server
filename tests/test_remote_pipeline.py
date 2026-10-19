@@ -127,7 +127,8 @@ def test_auth_and_missing_pipeline():
 
 
 def test_target_fallback_does_not_guess_between_cells():
-    request = RunRequest.model_validate(metadata())
+    meta = metadata(); meta["region"].pop("target_point_xy")
+    request = RunRequest.model_validate(meta)
     labels = np.zeros((12, 16), dtype="uint16")
     labels[2, 2] = 1; labels[7, 7] = 2
     with pytest.raises(ValueError, match="Ambiguous"):
@@ -135,6 +136,43 @@ def test_target_fallback_does_not_guess_between_cells():
     labels[7, 7] = 0
     mask, info = target_mask(labels, request)
     assert mask[2, 2] and info["match"] == "single_instance_in_box"
+
+
+def test_explicit_foreground_point_cannot_be_overridden_by_binary_fallback():
+    request = RunRequest.model_validate(metadata())
+    labels = np.zeros((12, 16), dtype="uint16")
+    labels[2:8, 2:8] = 1
+    labels[4, 4] = 0
+    with pytest.raises(ValueError, match="Explicit foreground point"):
+        target_mask(labels, request)
+
+
+def test_fragmented_binary_mask_without_point_is_ambiguous():
+    meta = metadata(); meta["region"].pop("target_point_xy")
+    labels = np.zeros((12, 16), dtype="uint16")
+    labels[2, 2] = labels[7, 7] = 1
+    with pytest.raises(ValueError, match="Ambiguous binary"):
+        target_mask(labels, RunRequest.model_validate(meta))
+
+
+def test_combined_sam2_passes_explicit_point_but_preserves_box_only_prompt():
+    observed = []
+    class RecordingMethods(Methods):
+        def list_avail_methods(self):
+            return ["sam2.original-tiny"]
+        def get_segmentation_fun(self, method):
+            def segment(image, prompt):
+                observed.append(prompt)
+                return np.ones(image.shape, dtype="uint16")
+            return segment
+    application = FastAPI()
+    application.include_router(create_router(RecordingMethods(), RLock(), pipelines={"test": TestPipeline()}))
+    with TestClient(application) as client:
+        meta = metadata(methods=["sam2.original-tiny"])
+        unpack(post(client, meta))
+        meta["region"].pop("target_point_xy")
+        unpack(post(client, meta))
+    assert observed == [(2, 2, 7, 7, 4, 4), (2, 2, 7, 7)]
 
 
 def test_padded_rectangular_crop_round_trip():

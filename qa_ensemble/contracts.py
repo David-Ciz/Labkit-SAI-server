@@ -6,6 +6,7 @@ from typing import Literal
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 import tifffile
+from scipy import ndimage
 
 OUTPUTS = ("ensemble_mask", "source_segmentations", "candidate_masks", "qa_scores",
            "selection", "ensemble_weights", "vote_map", "diagnostics")
@@ -90,6 +91,8 @@ def target_mask(labels, request: RunRequest):
     label = int(labels[py, px])
     if label:
         return labels == label, {"target_label": label, "match": "anchor"}
+    if request.region.target_point_xy is not None:
+        raise ValueError("Explicit foreground point is outside the predicted target; refine the prompt")
     x0, y0, x1, y1 = request.region.target_box_xyxy
     ids = np.unique(labels[y0:y1, x0:x1])
     ids = ids[ids != 0]
@@ -97,6 +100,9 @@ def target_mask(labels, request: RunRequest):
     # Several labels require a better anchor; do not guess using their sizes.
     if len(ids) == 1:
         label = int(ids[0])
+        # One binary foreground value may represent many disconnected regions.
+        if len(np.unique(labels)) <= 2 and ndimage.label(labels == label)[1] > 1:
+            raise ValueError("Ambiguous binary target: mark a foreground point or refine the box")
         return labels == label, {"target_label": label, "match": "single_instance_in_box"}
     if len(ids) == 0:
         raise ValueError("No segmented target in the selected box")

@@ -89,7 +89,8 @@ class SegmentationMethods:
             print(f"LOADING SAM2 model: {wanted_file}")
             model = S.Sam2BoxSegmenter(f"facebook/sam2.1-hiera-{wanted_model[9:]}")
             self.last_used_fun = lambda i,p : (
-                model.set_image(i).segment_box(p[0], p[1], p[2], p[3]) if p is not None
+                model.set_image(i).segment_box(p[0], p[1], p[2], p[3],
+                    positive_point=p[4:6] if len(p) == 6 else None) if p is not None
                 else model.set_image(i).segment_box(1,1, i.shape[1]-2,i.shape[0]-2)
                 )
             self.last_used_method = wanted_method
