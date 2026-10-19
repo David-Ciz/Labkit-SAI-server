@@ -1,0 +1,38 @@
+{
+  "candidate_features.py": {
+    "sha256": "2a97f1c849499a9d9cc301460c3926796350491a66285878c484d7486fbf41da",
+    "functions": [
+      "_expanded_mask_rectangle",
+      "_mask_raw_feature_record",
+      "_full_image_boundary_noise_feature_record",
+      "_crop_geometry_feature_record",
+      "_safe_mean",
+      "_safe_std",
+      "_safe_percentile",
+      "_gradient_magnitude",
+      "_boundary_gradient_mean",
+      "_boundary_gradient_contrast",
+      "_mask_hole_fraction",
+      "_mask_eccentricity"
+    ]
+  },
+  "candidate_ranker.py": {
+    "sha256": "3c933961b29f4c127419f41ae3d7e9e3690229519ccf0a33076dc77099f13dc8",
+    "functions": [
+      "add_cluster_ranker_features",
+      "_add_image_cluster_relative_features",
+      "_add_prefixed_cluster_relative_features",
+      "_rank_within_cluster",
+      "_numeric_series",
+      "_assign_center_clusters",
+      "_connected_components"
+    ]
+  },
+  "cluster_pairwise_ranker.py": {
+    "sha256": "131799911c032b4b66c537bbc58c51f5005c1831bc4f1a861acb40708aab68ef",
+    "functions": [
+      "build_pairwise_scoring_table",
+      "_pair_feature_record"
+    ]
+  }
+}

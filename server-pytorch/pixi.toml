@@ -45,4 +45,5 @@ requests = ">=2.34.2,<3"
 [pypi-dependencies]
 cellpose = "==4.0.4"
 instanseg-torch = "<=0.1.0"
+python-multipart = "==0.0.32"
 

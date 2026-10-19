@@ -6,7 +6,7 @@ import numpy.typing as npt
 def basic_inplace_normalization(float_img: npt.NDArray) -> npt.NDArray:
     m = float_img.min()
     r = float_img.max() - m
-    float_img = (float_img - m) / r
+    float_img = np.zeros_like(float_img, dtype=np.float32) if r == 0 else (float_img - m) / r
     return float_img
 
 

@@ -83,3 +83,11 @@ authenticated health check, rejection of unauthenticated requests, model discove
 binary data round-trip, and the `fakenet.square` binary segmentation endpoint all
 passed. Neural model inference and NVIDIA GPU execution require separate checks
 on the target host. Both CPU and GPU Compose configurations passed validation.
+
+## Remote QA and ensemble
+
+The PyTorch service also supports selecting several segmentation methods in one
+request, assessing the target-cell masks with a frozen QA model, and returning a
+trained ensemble result with optional source masks, QA scores, rankings and
+fusion weights. Install a compatible frozen bundle to enable the combined route.
+See [setup, API, client integration and current verification](docs/QA_ENSEMBLE.md).

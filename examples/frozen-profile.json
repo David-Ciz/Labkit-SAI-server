@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "pipeline_id": "ctc-musc-fold1-frozen-v1",
+  "dataset_identity": "__unseen_labkit_dataset__",
+  "training_exposure": "REPLACE with the matched QA/ranker/ensemble training and held-out sequence records before export",
+  "qa": {
+    "model_type": "resnet18",
+    "dropout_rate": 0.3,
+    "output_activation": "linear",
+    "crop_size": 256,
+    "raw_encoding": "preserve",
+    "tensor_transform": "divide255_center_half"
+  },
+  "ensemble": {
+    "max_candidates": 3,
+    "weight_transform": "raw_softmax",
+    "temperature": 1.0,
+    "boundary_floor": 0.75,
+    "threshold": 0.48
+  }
+}

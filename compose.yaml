@@ -25,6 +25,17 @@ services:
         bind:
           create_host_path: false
       - pytorch-cache:/home/labkit/.cache
+      - type: bind
+        source: ./qa-bundles
+        target: /app/qa-bundles
+        read_only: true
+    environment:
+      LABKIT_QA_BUNDLES: /app/qa-bundles
+      LABKIT_QA_DEVICE: ${LABKIT_QA_DEVICE:-cpu}
+      LABKIT_TENSORFLOW_URL: ${LABKIT_TENSORFLOW_URL:-}
+      LABKIT_TENSORFLOW_TOKEN_FILE: /app/tensorflow-secret.txt
+    # When StarDist orchestration is enabled, mount its existing token using
+    # compose.qa-tensorflow.yaml; tokens are never embedded in requests/metadata.
   tensorflow:
     profiles: [tensorflow]
     image: labkit-sai-tensorflow:local

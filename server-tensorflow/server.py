@@ -2,6 +2,9 @@ from fastapi import FastAPI, HTTPException, Body, Response, Depends, Header
 from typing import Annotated, Optional
 from pathlib import Path
 import secrets
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from qa_ensemble.serialization import MODEL_LOCK, serialized
 
 import segmentation_methods as NETS
 import numpy as np
@@ -59,7 +62,8 @@ async def list_methods():
 
 @app.get("/segmentation_2D/update_available_methods_list")
 async def update_methods():
-    methods.rescan_methods(methods_folder)
+    with MODEL_LOCK:
+        methods.rescan_methods(methods_folder)
     return {"status": "OK", "available_network_names": [net for net in sorted(methods.list_avail_methods())]}
 
 
@@ -102,6 +106,7 @@ async def segment_2d_plain_tiff(tiff_image: Annotated[bytes, Body(media_type='ap
     return segment_2d_tiff(tiff_image, do_normalization = True, method_name = method_name)
 
 
+@serialized
 def segment_2d_tiff(tiff_image: Annotated[bytes, Body(media_type='application/octet-stream')], do_normalization: bool, method_name: str):
     time_start = time.time()
 
@@ -119,7 +124,7 @@ def segment_2d_tiff(tiff_image: Annotated[bytes, Body(media_type='application/oc
         seg_method = methods.get_segmentation_fun(method_name)
         if seg_method is None:
             raise HTTPException(status_code=400, detail=f"METHOD ERROR: >>{method_name}<< is not supported in the encryption module")
-        ret_img = seg_method(img)
+        ret_img = seg_method(img, None)
         #print(ret_img, ret_img.shape, ret_img.dtype)
 
         ret_buf = BytesIO()
@@ -175,6 +180,7 @@ async def segment_2d_plain_stream(stream_image: Annotated[bytes, Body(media_type
     return segment_2d_stream(stream_image, width, height, do_normalization = True, method_name = method_name)
 
 
+@serialized
 def segment_2d_stream(stream_image: Annotated[bytes, Body(media_type='application/octet-stream')], width: int, height: int, do_normalization: bool, method_name: str, prompt = None):
     time_start = time.time()
 

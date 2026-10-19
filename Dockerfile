@@ -34,6 +34,7 @@ COPY --from=build /app/activate.sh /app/activate.sh
 COPY server-pytorch/*.py /app/server-pytorch/
 COPY server-tensorflow/*.py /app/server-tensorflow/
 COPY segmentation-wrappers/ /app/segmentation-wrappers/
+COPY qa_ensemble/ /app/qa_ensemble/
 COPY LICENSE /app/LICENSE
 COPY --chmod=0755 docker/entrypoint.sh /app/entrypoint.sh
 COPY docker/healthcheck.py /app/healthcheck.py

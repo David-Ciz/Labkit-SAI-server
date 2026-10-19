@@ -23,3 +23,8 @@ venv.bak/
 
 # API access token
 secret.txt
+
+# Installed, frozen inference bundles (weights are not source code)
+qa-bundles/
+
+.pytest_cache/

@@ -1,0 +1,12 @@
+# Optional internal StarDist access for the combined PyTorch orchestrator.
+services:
+  pytorch:
+    environment:
+      LABKIT_TENSORFLOW_URL: http://tensorflow:8000
+    volumes:
+      - type: bind
+        source: ./server-tensorflow/secret.txt
+        target: /app/tensorflow-secret.txt
+        read_only: true
+        bind:
+          create_host_path: false

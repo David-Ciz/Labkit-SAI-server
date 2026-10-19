@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "pipeline_id": "ctc-musc-fold1-frozen-v1",
+  "methods": [
+    "cellpose.original",
+    "instanseg.original",
+    "sam2.original-small"
+  ],
+  "region": {
+    "origin_xy": [
+      0,
+      0
+    ],
+    "original_shape_yx": [
+      512,
+      512
+    ],
+    "target_box_xyxy": [
+      128,
+      128,
+      256,
+      256
+    ]
+  },
+  "return": [
+    "ensemble_mask",
+    "qa_scores",
+    "candidate_masks",
+    "ensemble_weights",
+    "selection"
+  ]
+}
