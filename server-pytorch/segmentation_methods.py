@@ -1,5 +1,8 @@
 import os
 import sys
+import gc
+
+import torch
 
 import utils
 
@@ -41,6 +44,18 @@ class SegmentationMethods:
     def list_avail_methods(self):
         return self.available_methods.keys()
 
+    def clear_cache(self):
+        """Release the active segmenter before allocating another checkpoint.
+
+        Callers serialize model switching/inference with the server's model lock.
+        QA and ensemble models live in their own frozen registry.
+        """
+        self.last_used_fun = None
+        self.last_used_method = "__intentionally_invalid_method_name__"
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
 
     def get_segmentation_fun(self, wanted_method:str):
         # re-use the currently activated method
@@ -52,6 +67,7 @@ class SegmentationMethods:
             print("REQUESTED MODEL NOT AVAILABLE!")
             return None
 
+        self.clear_cache()
         wanted_file = self.available_methods[wanted_method]
         wanted_net,wanted_model = wanted_method.split('.')
 
@@ -99,6 +115,8 @@ class SegmentationMethods:
             print("NOT LOADING ANY MODEL!?")
             return None ## this should never happen
 
+        # Also cover wrappers (e.g. Mask R-CNN) without their own no-grad guard.
+        self.last_used_fun = torch.inference_mode()(self.last_used_fun)
         return self.last_used_fun
 
 

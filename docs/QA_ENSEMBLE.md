@@ -124,3 +124,23 @@ The suite covers request validation/authentication, selected outputs, ROI mappin
 The combined SAM2 path forwards an explicit point as a positive prompt in addition to the box. A derived box center is not automatically promoted to a positive point. Legacy box-only segmentation calls retain their existing behavior. Point inclusion is a necessary correspondence check when the user asserts foreground; it is not a guarantee of accurate boundaries or mask quality. The diagnostic point-only additions already showed that poor masks can contain the point. The cached-mask rejection result (0.6683) is not an accuracy claim for this changed prompt path.
 
 The research grouping correction lives separately on `codex/ensemble-candidate-context-v2` in the silver-truth repository. Its version-2 weights require new training and an explicitly compatible export/adapter; the historical bundle is not relabelled or overwritten. The QA checkpoint's poor stress-control behavior is not fixed by these engineering changes.
+
+## Multi-model execution and checkpoint preparation
+
+Model switching releases the previous cached segmenter, runs garbage collection and clears unused CUDA allocations before constructing the next checkpoint. All segmenter calls use PyTorch inference mode, including legacy Mask R-CNN routes. The existing shared model lock still serializes switching and inference. Frozen QA/ensemble models remain loaded separately. A failed new checkpoint load leaves no stale active method.
+
+Download trusted model weights into the persistent cache before an interactive demo. With the service stopped, the existing container can prepare the tested pool:
+
+```sh
+docker compose run --rm --no-deps pytorch python -c '
+from segmentation_methods import SegmentationMethods
+m = SegmentationMethods("../server-MODELS")
+for name in ("cellpose.original", "instanseg.original", "maskrcnnv1COCO.original", "sam2.original-tiny", "sam2.original-small", "sam2.original-base-plus", "sam2.original-large"):
+    m.get_segmentation_fun(name)
+m.clear_cache()
+'
+```
+
+This loads/downloads one checkpoint at a time; it does not train models or perform a GPU sizing check. Keep the cache volume. The tested seven checkpoints include four related SAM2 sizes. A request may return fewer target candidates if a method fails or its segmentation misses an explicitly supplied foreground point. Such partial results retain successful outputs and per-method errors.
+
+The native client can explicitly mark the box centre as a foreground point. Draw the region with that centre inside the intended cell; turn the option off to use box-only matching. API callers supply `region.target_point_xy`. This option is separate from box-centre fallback and is never inferred from a reference mask.
