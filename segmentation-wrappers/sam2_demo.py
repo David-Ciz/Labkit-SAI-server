@@ -1,10 +1,12 @@
 import contextlib
+import os
 import numpy as np
 import torch
 
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+from qa_ensemble.runtime_device import model_device
+device = model_device("sam2")
 print(f"Will use: {device}")
 
 
@@ -33,7 +35,8 @@ class Sam2BoxSegmenter:
 
     # -- helpers -------------------------------------------------------------
     def _ctx(self):
-        if device.type == "cuda":
+        # LABKIT_SAM2_BF16=0 runs float32, matching masks produced on CPU/MPS (bundles trained on those).
+        if device.type == "cuda" and os.getenv("LABKIT_SAM2_BF16", "1") != "0":
             return torch.autocast("cuda", dtype=torch.bfloat16)
         return contextlib.nullcontext()
 
@@ -77,3 +80,12 @@ class Sam2BoxSegmenter:
         # predict() returns float 0.0 or 1.0 masks
         return masks[0].astype('uint16')
 
+    # -- entry point 3 -------------------------------------------------------
+    def segment_point(self, x: float, y: float) -> np.ndarray:
+        """Segment from one positive point only (best of SAM's three proposals)."""
+        if self.shape is None:
+            raise RuntimeError("call set_image() first")
+        with torch.inference_mode(), self._ctx():
+            masks, scores, _ = self.predictor.predict(point_coords=np.array([[x, y]], np.float32),
+                                                      point_labels=np.array([1]), multimask_output=True)
+        return (masks[int(np.argmax(scores))] > 0).astype('uint16')

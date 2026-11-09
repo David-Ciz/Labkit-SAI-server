@@ -35,6 +35,13 @@ def main():
     ensemble = joblib.load(args.ensemble)
     if ensemble.get("model_type") != "deep_sets":
         parser.error("Expected a saved Deep Sets payload")
+    grouping_version = ensemble.get("candidate_grouping_version", 1)
+    if grouping_version not in (1, 2):
+        parser.error("Unsupported candidate-grouping version")
+    declared = profile["ensemble"].get("candidate_grouping_version", grouping_version)
+    if declared != grouping_version:
+        parser.error("Profile and model candidate-grouping versions differ")
+    profile["ensemble"]["candidate_grouping_version"] = grouping_version
     ranker = joblib.load(args.ranker)
     if not {"model", "feature_columns", "model_columns", "config"}.issubset(ranker):
         parser.error("Expected a saved pairwise ranker payload")

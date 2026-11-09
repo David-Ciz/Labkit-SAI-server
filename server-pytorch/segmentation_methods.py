@@ -55,6 +55,8 @@ class SegmentationMethods:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        if torch.backends.mps.is_available():
+            torch.mps.empty_cache()
 
 
     def get_segmentation_fun(self, wanted_method:str):
@@ -103,12 +105,22 @@ class SegmentationMethods:
 
         elif wanted_net == "sam2":
             print(f"LOADING SAM2 model: {wanted_file}")
-            model = S.Sam2BoxSegmenter(f"facebook/sam2.1-hiera-{wanted_model[9:]}")
-            self.last_used_fun = lambda i,p : (
-                model.set_image(i).segment_box(p[0], p[1], p[2], p[3],
-                    positive_point=p[4:6] if len(p) == 6 else None) if p is not None
-                else model.set_image(i).segment_box(1,1, i.shape[1]-2,i.shape[0]-2)
-                )
+            size = wanted_model[9:]
+            point_only = size.endswith("-point")
+            model = S.Sam2BoxSegmenter(f"facebook/sam2.1-hiera-{size.removesuffix('-point')}")
+            if point_only:
+                # point-only prompting: needs the explicit target point (prompt[4:6])
+                def point_fun(i, p):
+                    if p is None or len(p) != 6:
+                        raise ValueError("sam2 point-only method needs a target point")
+                    return model.set_image(i).segment_point(p[4], p[5])
+                self.last_used_fun = point_fun
+            else:
+              self.last_used_fun = lambda i,p : (
+                  model.set_image(i).segment_box(p[0], p[1], p[2], p[3],
+                      positive_point=p[4:6] if len(p) == 6 else None) if p is not None
+                  else model.set_image(i).segment_box(1,1, i.shape[1]-2,i.shape[0]-2)
+                  )
             self.last_used_method = wanted_method
 
         else:

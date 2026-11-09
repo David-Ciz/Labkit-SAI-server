@@ -2,9 +2,11 @@ from fastapi import FastAPI, HTTPException, Body, Response, Depends, Header
 from typing import Annotated, Optional
 from pathlib import Path
 import secrets
+import os
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from qa_ensemble.serialization import MODEL_LOCK, serialized
+from qa_ensemble.runtime_device import runtime_report
 
 import segmentation_methods as NETS
 import numpy as np
@@ -17,14 +19,19 @@ sys.path.append("../../images_loaders")
 import utils
 
 
-# --- token, read once at startup from secret.txt next to this script ---
+# The native localhost launcher supplies a convenient development-only key.
+# Other deployments continue to read their existing secret file.
 SECRET_FILE = Path(__file__).resolve().parent / "secret.txt"
-try:
-    API_TOKEN = SECRET_FILE.read_text(encoding="utf-8").strip()
-except FileNotFoundError:
-    sys.exit(f"Missing token file: {SECRET_FILE}")
+LOCAL_TEST_KEY = os.getenv("LABKIT_LOCAL_TEST_KEY")
+if LOCAL_TEST_KEY is not None:
+    API_TOKEN = LOCAL_TEST_KEY.strip()
+else:
+    try:
+        API_TOKEN = SECRET_FILE.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        sys.exit(f"Missing token file: {SECRET_FILE}")
 if not API_TOKEN:
-    sys.exit(f"Token file is empty: {SECRET_FILE}")
+    sys.exit("API token is empty")
 
 
 async def verify_token(x_api_token: Annotated[Optional[str], Header()] = None):
@@ -40,7 +47,7 @@ async def verify_token(x_api_token: Annotated[Optional[str], Header()] = None):
 ## (note the subshell `cat` so that the secret itself never appears in bash history)
 
 
-methods_folder = '../server-MODELS'
+methods_folder = os.getenv("LABKIT_MODELS_DIR", '../server-MODELS')
 methods = NETS.SegmentationMethods(methods_folder)
 
 app = FastAPI(
@@ -53,6 +60,11 @@ app = FastAPI(
 @app.get("/")
 async def handle_root():
     return {"Welcome message": "Hello World. This is a small server of 2D cell segmentation models."}
+
+
+@app.get("/runtime")
+def runtime():
+    return runtime_report()
 
 
 @app.get("/segmentation_2D/list_available_methods")

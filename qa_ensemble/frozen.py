@@ -67,7 +67,33 @@ class DeepSets(nn.Module):
 
 
 def relative_features(features, payload):
-    augmented = fm.add_cluster_ranker_features(features, cluster_distance=payload["config"].get("cluster_distance", 4.0))
+    version = payload.get("candidate_grouping_version", 1)
+    if version not in (1, 2):
+        raise ValueError(f"Unsupported candidate-grouping version: {version}")
+    if version == 2:
+        stale = [column for column in features if column.startswith((
+            "candidate_set_rank__", "candidate_set_centered__",
+            "candidate_set_gap_to_best__", "candidate_set_context__"))]
+        work = features.drop(columns=stale).copy()
+        keys = [column for column in payload["config"].get("group_context_columns", (
+            "dataset", "fold", "campaign_number", "candidate_set_id", "label")) if column in work]
+        keys += [column for column in ("split", "image_id") if column in work]
+        namespace = (work[keys].astype("string").fillna("<missing>").apply(
+            lambda row: json.dumps(list(zip(keys, row.tolist()))), axis=1)
+            if keys else pd.Series("all_candidates", index=work.index))
+        original_image = work["image_id"].copy() if "image_id" in work else None
+        work["image_id"] = namespace
+        augmented = fm.add_cluster_ranker_features(
+            work, cluster_distance=payload["config"].get("cluster_distance", 4.0))
+        if not {"center_y", "center_x"}.issubset(work.columns):
+            augmented["ranker_cluster_id"] = namespace
+        if original_image is None:
+            augmented = augmented.drop(columns="image_id")
+        else:
+            augmented["image_id"] = original_image
+    else:
+        # Keep the original bundle's inference unchanged for explicit rollback.
+        augmented = fm.add_cluster_ranker_features(features, cluster_distance=payload["config"].get("cluster_distance", 4.0))
     additions = {}
     for column in payload["config"]["feature_columns"]:
         if column not in augmented:
@@ -93,7 +119,19 @@ def ensemble_matrix(features, payload):
         values = features[column].fillna("").astype(str)
         categories = payload["preprocess"]["categories"].get(column, [])
         parts.append(np.array([[float(value == category) for category in categories] for value in values], dtype=np.float32).reshape(len(values), len(categories)))
-    return np.concatenate(parts, axis=1)
+    return np.concatenate(parts, axis=1).astype(np.float32, copy=False)
+
+
+def ensemble_raw_scores(features, payload, model, device="cpu"):
+    """Evaluate each candidate set independently, including multi-cell replays."""
+    matrix = ensemble_matrix(features, payload)
+    output = np.zeros(len(features), dtype=float)
+    for indices in features.groupby("ranker_cluster_id", dropna=False, sort=False).indices.values():
+        with torch.inference_mode():
+            output[indices] = model(torch.as_tensor(matrix[indices], device=device)).cpu().numpy()
+    if not np.isfinite(output).all():
+        raise ValueError("Ensemble produced nonfinite scores")
+    return output
 
 
 def centered_crop(array, center, size):
@@ -218,12 +256,16 @@ class FrozenPipeline:
         # Only trusted, hash-checked, server-installed sklearn payloads are loaded.
         self.ranker = joblib.load(artifact("ranker"))
         self.payload = torch.load(artifact("ensemble"), map_location="cpu", weights_only=True)
+        version = self.payload.get("candidate_grouping_version", 1)
+        if version not in (1, 2) or version != settings.get("candidate_grouping_version", 1):
+            raise ValueError("Bundle and ensemble candidate-grouping versions differ or are unsupported")
         self.ensemble = DeepSets(self.payload["input_dim"], self.payload["config"]["deep_sets_hidden_dim"])
         self.ensemble.load_state_dict(self.payload["state_dict"])
         self.ensemble.to(self.device).eval()
         self.provenance = {"pipeline_id": m["pipeline_id"], "manifest_sha256": sha256(self.path),
                            "artifacts": m["artifacts"], "training_exposure": m["training_exposure"],
-                           "qa_profile": m["qa"], "ensemble_settings": m["ensemble"]}
+                           "qa_profile": m["qa"], "ensemble_settings": m["ensemble"],
+                           "candidate_grouping_version": version}
 
     def run(self, image, candidates, request):
         result = {"scores": [], "stages": {}, "diagnostics": {}}
@@ -277,9 +319,7 @@ class FrozenPipeline:
                     selected[column] = np.nan
             result["diagnostics"]["imputed_ensemble_features"] = [column for column in self.payload["feature_columns"] if selected[column].isna().any()]
             result["diagnostics"]["unknown_categories"] = {column: sorted(set(selected[column].astype(str))-set(categories)) for column, categories in self.payload["preprocess"]["categories"].items()}
-            matrix = ensemble_matrix(selected, self.payload)
-            with torch.inference_mode():
-                logits = self.ensemble(torch.as_tensor(matrix, device=self.device)).cpu().numpy()
+            logits = ensemble_raw_scores(selected, self.payload, self.ensemble, self.device)
             params = self.manifest["ensemble"]
             weights = np.exp(np.clip((logits-logits.max()) / params["temperature"], -50., 0.)).clip(min=1e-3)
             weights /= weights.sum()

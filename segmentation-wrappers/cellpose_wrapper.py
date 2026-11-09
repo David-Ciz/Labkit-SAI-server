@@ -1,7 +1,8 @@
 import torch
 from cellpose import models
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+from qa_ensemble.runtime_device import model_device
+device = model_device("cellpose")
 print(f"Will use: {device}")
 
 

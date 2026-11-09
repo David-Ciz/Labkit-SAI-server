@@ -2,6 +2,8 @@
 
 The combined PyTorch endpoint runs the selected segmentation methods, extracts one target-cell mask from each output, applies a frozen QA/ranker/Deep Sets bundle and returns the requested results. TensorFlow/StarDist remains a separate optional service. No training occurs in the server or client.
 
+**Current native deployment — 4 November 2026:** `corrected-v2` is installed and active alongside the preserved legacy pipeline. The exporter and adapter support candidate-grouping version 2, recompute context-isolated relative features and infer each candidate set separately. Research/server parity is exact on 10,598 rows; 29 server tests and a real four-model MPS request pass. David's separate GUI preview/apply check also passes. Accuracy remains limited on the checked example (both bundles IoU 0.2935, Cellpose 0.5158). See `/Users/davidciz/second-brain/outputs/labkit-corrected-bundle-2026-11-04/README.md`. The dated records below describe earlier stages; Linux GPU/HPC verification remains open.
+
 ## Current implementation and remaining inputs
 
 - Implemented: authenticated combined endpoint, capabilities, one-cell target matching, frozen inference adapter, optional output bundle, partial results, shared model locks, container configuration and a Python client.
@@ -51,6 +53,62 @@ docker compose -f compose.yaml -f compose.qa-tensorflow.yaml --profile tensorflo
 ```
 
 On a configured NVIDIA host, include `-f compose.gpu.yaml` as well. This document does not identify or deploy to a particular remote host. Model inference and GPU compatibility must be checked there.
+
+## Train a bundle for your images and segmenter pool
+
+QA, ranking and fusion only work on candidates like the ones they were trained on. A bundle trained on other
+segmenters can rank your candidates **in reverse**. In the BF-C2DL-MuSC evaluation, the CTC-trained bundle
+ordered Cellpose/SAM2 pairs correctly only 36.6% of the time; after pool-specific training, 82.4%. So train a
+bundle whenever you change the image type, the method list or the prompting style:
+
+```sh
+python scripts/train_pool_bundle.py --images imgs/ --labels labels/ \
+    --server http://127.0.0.1:8003 --token <key> \
+    --methods cellpose.original,cellpose3.cyto3,microsam.vit_b_lm,sam2.original-large,sam2.original-large-point,stardist.versatile-fluo \
+    --raw-encoding minmax_uint8 \
+    --base-bundle qa-bundles/corrected-v2 \
+    --silver-truth-src <silver-truth candidate-context-v2>/src <silver-truth>/src \
+    --pipeline-id my-pool-v1 --out qa-bundles/my-pool-v1
+```
+
+- **Inputs:** 2D grayscale TIFFs plus instance-label TIFFs with the same file names. Cells from at least two
+  images are required; how many you need is reported in the evaluation's label-budget addendum.
+- **Candidates** come from the running server's own `/segmentation_2D/qa_ensemble` route. `--prompt cell`
+  (default) sends a box drawn around each annotated cell (bounding box + ~10% jittered margin) with its centre
+  as the foreground point, as the native client does when you draw a box. `--prompt fixed --box-size 96`
+  reproduces the central-box setup of `labkit-pool-v1`. Use the prompting you will use interactively.
+- **Intensities:** `--raw-encoding minmax_uint8` rescales each crop for QA; use it for 16-bit or float images.
+- **Training:** QA is fine-tuned from the base bundle (MSE, Adam 1e-4, flips/rot90, early stopping on held-out
+  images). Out-of-fold QA scores feed the pairwise ranker and Deep Sets refits, which use the base bundle's
+  recipes. Thresholds, temperature and top-k are inherited.
+- Responses are cached in `<out>.work/` so an interrupted run resumes. Copy the bundle into the server's
+  bundle directory and restart; `corrected-v2` and other bundles stay selectable for rollback.
+- Fusion cannot exceed what the pool offers. With one strong model and several weak, correlated ones, expect
+  parity with the best model, plus calibrated QA scores and safe fallback, rather than large gains. With a
+  diverse pool (the six-model pool above, five CTC datasets, user-drawn boxes) the fused result beat the single
+  model chosen on the training cells by +0.081 IoU and QA flagged bad masks with AUROC 0.91
+  (`labkit-evaluation/model-pilot-2026-11-07/README.md`).
+
+### Models in separate environments (side servers)
+
+micro-SAM, Cellpose 3 and StarDist cannot share the PyTorch server's environment (Cellpose 3 conflicts with
+Cellpose 4; StarDist needs TensorFlow). `server-extra/side_server.py` serves them from their own environments;
+the main server forwards to them and advertises their methods:
+
+| Method ID | Side group | Prompt |
+|---|---|---|
+| `microsam.vit_b_lm` | `microsam` | box + point |
+| `cellpose3.cyto3`, `cellpose3.nuclei` | `cellpose3` | crop |
+| `stardist.versatile-fluo` | `stardist` (TensorFlow CPU) | crop |
+| `sam2.original-large-point` (in the main server) | — | point only |
+
+Start each with `<env python> server-extra/side_server.py <group> --port <p> --token-file <file>` and set
+`LABKIT_SIDE_BACKENDS="microsam=http://127.0.0.1:8011,cellpose3=http://127.0.0.1:8012,stardist=http://127.0.0.1:8013"`
+and `LABKIT_SIDE_TOKEN_FILE` for the main server. On the Mac, `runtime/side-backends.json`
+(`{"<group>": {"python": "<env>/bin/python", "port": 8011}}`) makes `scripts/macos_server.py start/stop`
+manage them with a fresh token. `sam2.original-large-point` is advertised only when the empty marker
+`server-MODELS/original-large-point.sam2.torch.model` exists (`touch` it; `*.model` is git-ignored). An unreachable side server simply advertises no methods. Served masks equal the
+study wrappers' output exactly, limited to the QA window like every candidate (checked on 50 cells × 8 models).
 
 ## Request and response
 
@@ -123,7 +181,7 @@ The suite covers request validation/authentication, selected outputs, ROI mappin
 
 The combined SAM2 path forwards an explicit point as a positive prompt in addition to the box. A derived box center is not automatically promoted to a positive point. Legacy box-only segmentation calls retain their existing behavior. Point inclusion is a necessary correspondence check when the user asserts foreground; it is not a guarantee of accurate boundaries or mask quality. The diagnostic point-only additions already showed that poor masks can contain the point. The cached-mask rejection result (0.6683) is not an accuracy claim for this changed prompt path.
 
-The research grouping correction lives separately on `codex/ensemble-candidate-context-v2` in the silver-truth repository. Its version-2 weights require new training and an explicitly compatible export/adapter; the historical bundle is not relabelled or overwritten. The QA checkpoint's poor stress-control behavior is not fixed by these engineering changes.
+The research grouping correction lives on `codex/ensemble-candidate-context-v2` in the silver-truth repository. Corrected version-2 weights were trained and integrated through the compatible export/adapter on 4 November (see the current deployment note above); the historical bundle is not relabelled or overwritten. The QA checkpoint's poor stress-control behavior is not fixed by these engineering changes.
 
 ## Multi-model execution and checkpoint preparation
 

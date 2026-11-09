@@ -3,6 +3,11 @@
 FastAPI servers for PyTorch (Cellpose, InstanSeg, Mask R-CNN, SAM2) and
 TensorFlow (StarDist). All API routes require an `X-API-Token` header.
 
+## Native Mac testing
+
+Local Apple Silicon testing uses the [native macOS/MPS server](docs/MACOS_NATIVE.md),
+with the same API and frozen model bundles. Linux GPU/HPC verification is separate.
+
 ## Docker
 
 The image uses each backend's committed Pixi environment. These environments

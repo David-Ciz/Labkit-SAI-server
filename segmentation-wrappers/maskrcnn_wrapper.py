@@ -2,7 +2,8 @@ import torchvision.models.detection as D
 import torch
 import pickle
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+from qa_ensemble.runtime_device import model_device
+device = model_device("maskrcnnv1COCO")
 print(f"Will use: {device}")
 
 
@@ -23,7 +24,7 @@ def load_model(model, filepath):
     """
     with open(filepath,"rb") as f:
         w = pickle.load(f) #NB: reads-in always CPU versions
-        if device.type == 'cuda':
+        if device.type != 'cpu':
             for k in w.keys():
                 w[k] = w[k].to(device)
         model.load_state_dict(w)
@@ -33,12 +34,12 @@ def apply_model(model, img, res_confidence_threshold: float = 0.5):
     _ = model.eval()
 
     imgAsTensor = torch.reshape(torch.Tensor(img), [1,1,*img.shape]).to(device)
-    outTensor = torch.empty(imgAsTensor.shape)
+    outTensor = torch.empty_like(imgAsTensor)
 
     complete_model_response = model(imgAsTensor)
     outTensor = fill_masks_from_retval_struct(imgAsTensor, outTensor, complete_model_response)
 
-    return outTensor[0,0].to(torch.uint16).cpu().numpy(), complete_model_response[0]
+    return outTensor[0,0].cpu().to(torch.uint16).numpy(), complete_model_response[0]
 
 
 

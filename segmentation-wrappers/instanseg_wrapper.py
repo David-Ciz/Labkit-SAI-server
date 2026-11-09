@@ -3,7 +3,8 @@ import numpy as np
 import torch
 from instanseg import inference_class as IS
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+from qa_ensemble.runtime_device import model_device
+device = model_device("instanseg")
 print(f"Will use: {device}")
 
 
@@ -42,7 +43,7 @@ def apply_model(model, img):
                                         pixel_size = img_pixel_size,
                                         target = "cells", # only useful for the official models
                                         return_image_tensor = False)
-    return masks.detach().numpy()[0,0,:,:]
+    return masks.detach().cpu().numpy()[0,0,:,:]
     # NB: always the first image on the list (of length 1 = batch size) of created images
     # NB: always the one-and-only channel
 

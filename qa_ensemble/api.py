@@ -16,6 +16,7 @@ import tifffile
 
 from .contracts import OUTPUTS, RunRequest, decode_image
 from .service import EnsembleService
+from .runtime_device import model_device, runtime_report
 
 
 def create_router(methods, lock: RLock, pipelines=None):
@@ -29,6 +30,29 @@ def create_router(methods, lock: RLock, pipelines=None):
     tf_token_file = os.getenv("LABKIT_TENSORFLOW_TOKEN_FILE", "")
     tf_timeout = float(os.getenv("LABKIT_TENSORFLOW_TIMEOUT", "180"))
 
+    # Side servers for segmenters in separate environments (server-extra/side_server.py):
+    # LABKIT_SIDE_BACKENDS="microsam=http://127.0.0.1:8011,cellpose3=http://127.0.0.1:8012"
+    side_urls = dict(kv.split("=", 1) for kv in os.getenv("LABKIT_SIDE_BACKENDS", "").split(",") if "=" in kv)
+    side_token_file = os.getenv("LABKIT_SIDE_TOKEN_FILE", str(Path(__file__).resolve().parents[1] / "server-pytorch" / "secret.txt"))
+    side_timeout = float(os.getenv("LABKIT_SIDE_TIMEOUT", "300"))
+    side_methods = {}  # method_id -> (url, prompt kind); filled lazily so a down side server does not block startup
+
+    def side_headers():
+        return {"X-API-Token": Path(side_token_file).read_text().strip()}
+
+    def discover_side():
+        for group, url in side_urls.items():
+            if any(u == url for u, _ in side_methods.values()):
+                continue
+            try:
+                r = requests.get(url.rstrip("/") + "/methods", headers=side_headers(), timeout=5)
+                r.raise_for_status()
+                for m, kind in r.json()["prompt"].items():
+                    side_methods[m] = (url.rstrip("/"), kind)
+            except Exception as exc:  # unavailable side servers simply advertise nothing
+                print(f"side backend {group} at {url} unavailable: {exc}")
+        return side_methods
+
     def tf_headers():
         if not tf_url or not tf_token_file:
             raise ValueError("StarDist backend is not configured")
@@ -40,6 +64,7 @@ def create_router(methods, lock: RLock, pipelines=None):
     def available_methods():
         with lock:
             identities = list(methods.list_avail_methods())
+        identities += list(discover_side())
         if tf_url:
             # Known model advertisements, not a network request on every discovery.
             model_root = Path(__file__).resolve().parents[1] / "server-MODELS"
@@ -47,10 +72,27 @@ def create_router(methods, lock: RLock, pipelines=None):
         return sorted(set(identities))
 
     def info(method):
+        if method in side_methods:
+            return {"method_id": method, "backend": "side:" + method.split(".")[0], "device": "side-server",
+                    "prompt": side_methods[method][1]}
         return {"method_id": method, "backend": "tensorflow" if method.startswith("stardist.") else "pytorch",
-                "prompt": "box" if method.startswith("sam2.") else "crop"}
+                "device": "remote" if method.startswith("stardist.") else str(model_device(method.split(".")[0])),
+                "prompt": ("point" if method.endswith("-point") else "box") if method.startswith("sam2.") else "crop"}
 
     def segment(method, image, request):
+        x0, y0, x1, y1 = request.region.target_box_xyxy
+        if method in side_methods:
+            url, _ = side_methods[method]
+            query = f"box={x0},{y0},{x1-1},{y1-1}"
+            if request.region.target_point_xy is not None:
+                query += "&point={},{}".format(*request.region.target_point_xy)
+            data = BytesIO()
+            tifffile.imwrite(data, image, photometric="minisblack")
+            response = requests.post(f"{url}/segment/{quote(method, safe='')}?{query}", data=data.getvalue(),
+                                     headers={**side_headers(), "Content-Type": "application/octet-stream"}, timeout=side_timeout)
+            if response.status_code != 200:
+                raise ValueError(f"side backend failed: {response.text[:200]}")
+            return decode_image(response.content, max_pixels)
         if method.startswith("stardist."):
             data = BytesIO()
             tifffile.imwrite(data, image, photometric="minisblack")
@@ -62,7 +104,6 @@ def create_router(methods, lock: RLock, pipelines=None):
         fun = methods.get_segmentation_fun(method)
         if fun is None:
             raise ValueError("Method is unavailable")
-        x0, y0, x1, y1 = request.region.target_box_xyxy
         prompt = (x0, y0, x1-1, y1-1)
         if method.startswith("sam2.") and request.region.target_point_xy is not None:
             prompt += request.region.target_point_xy
@@ -85,6 +126,7 @@ def create_router(methods, lock: RLock, pipelines=None):
     @router.get("/segmentation_2D/qa_ensemble/capabilities")
     def capabilities():
         return {"schema_version": 1, "target_scope": "one_cell", "methods": [info(m) for m in available_methods()],
+                "runtime": runtime_report(),
                 "pipelines": [p.provenance for p in registry.values()], "unavailable_bundles": failures,
                 "outputs": OUTPUTS, "limits": {"max_pixels": max_pixels, "max_bytes": max_bytes, "max_methods": max_methods}}
 

@@ -28,3 +28,6 @@ secret.txt
 qa-bundles/
 
 .pytest_cache/
+runtime-cache/
+runtime/
+/qa-bundles
