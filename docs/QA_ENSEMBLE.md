@@ -110,6 +110,10 @@ manage them with a fresh token. `sam2.original-large-point` is advertised only w
 `server-MODELS/original-large-point.sam2.torch.model` exists (`touch` it; `*.model` is git-ignored). An unreachable side server simply advertises no methods. Served masks equal the
 study wrappers' output exactly, limited to the QA window like every candidate (checked on 50 cells × 8 models).
 
+## Training records and LEXIS deployment
+
+With `LABKIT_RECORD_DIR` set, each QA/ensemble request stores its ROI and candidates. `POST /segmentation_2D/qa_ensemble/feedback` stores the mask the user kept. `scripts/train_pool_bundle.py --records DIR` trains a pool-specific bundle from these records without re-running segmentation. For batch jobs (AI Training/HEAppE) and the inference-service engine, see [`deploy/lexis/README.md`](../deploy/lexis/README.md).
+
 ## Request and response
 
 `GET /segmentation_2D/qa_ensemble/capabilities` lists method IDs, prompt support, available frozen pipelines, output names and configured limits. The PyTorch service advertises StarDist models from the mounted model directory only when its internal TensorFlow URL is configured. Actual backend failures are returned per method.

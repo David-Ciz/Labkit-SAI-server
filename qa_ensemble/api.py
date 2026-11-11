@@ -5,6 +5,7 @@ from io import BytesIO
 import os
 from pathlib import Path
 from threading import RLock
+from time import perf_counter
 from urllib.parse import quote
 
 from fastapi import APIRouter, Form, HTTPException, UploadFile
@@ -15,13 +16,19 @@ import requests
 import tifffile
 
 from .contracts import OUTPUTS, RunRequest, decode_image
+from .records import ACTIONS, Recorder
 from .service import EnsembleService
 from .runtime_device import model_device, runtime_report
 
 
-def create_router(methods, lock: RLock, pipelines=None):
-    """Mount in the authenticated PyTorch app; inject artifacts/backends in tests."""
+def create_router(methods, lock: RLock, pipelines=None, recorder=None):
+    """Mount in the authenticated PyTorch app; inject artifacts/backends in tests.
+
+    Training records are opt-in: pass a Recorder, or set LABKIT_RECORD_DIR.
+    """
     registry = pipelines if pipelines is not None else {}
+    if recorder is None:
+        recorder = Recorder.from_env()
     failures = []
     max_pixels = int(os.getenv("LABKIT_QA_MAX_PIXELS", "4194304"))
     max_bytes = int(os.getenv("LABKIT_QA_MAX_BYTES", "67108864"))
@@ -109,7 +116,7 @@ def create_router(methods, lock: RLock, pipelines=None):
             prompt += request.region.target_point_xy
         return fun(image, prompt)
 
-    service = EnsembleService(segment, registry, info, lock)
+    service = EnsembleService(segment, registry, info, lock, recorder)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -119,7 +126,35 @@ def create_router(methods, lock: RLock, pipelines=None):
             loaded, unavailable = load_pipelines(root, os.getenv("LABKIT_QA_DEVICE", "cpu"))
             registry.update(loaded)
             failures.extend(unavailable)
+        required = os.getenv("LABKIT_REQUIRE_PIPELINE", "").strip()
+        if required and required not in registry:
+            # An HPC engine serving a named model must not come up healthy without it.
+            raise RuntimeError(f"Required pipeline {required!r} is not available; loaded: {sorted(registry)}")
+        if required and os.getenv("LABKIT_WARMUP", "") == "1":
+            warm_up(required)
         yield
+
+    def warm_up(pipeline_id):
+        """Load/download every pool model once before serving, so no user request pays the cold start.
+
+        The server only answers (including /metrics) after this, so the inference service keeps
+        returning "model is being loaded" instead of letting a first request time out.
+        """
+        exposure = getattr(registry[pipeline_id], "provenance", {}).get("training_exposure", {})
+        pool = (exposure.get("methods") or exposure.get("pool") or []) if isinstance(exposure, dict) else []
+        image = np.zeros((128, 128), np.float32)
+        image[44:84, 44:84] = 1.0
+        request = RunRequest(region={"original_shape_yx": (128, 128), "target_box_xyxy": (40, 40, 88, 88),
+                                     "target_point_xy": (64, 64)}, methods=pool or ["none"], pipeline_id=pipeline_id)
+        for method in pool:
+            started = perf_counter()
+            try:
+                with lock:
+                    segment(method, image.copy(), request)
+                print(f"warm-up {method}: {perf_counter() - started:.1f}s", flush=True)
+            except Exception as exc:  # a failing model is reported per request later
+                print(f"warm-up {method} failed: {exc}", flush=True)
+
 
     router = APIRouter(lifespan=lifespan)
 
@@ -128,7 +163,8 @@ def create_router(methods, lock: RLock, pipelines=None):
         return {"schema_version": 1, "target_scope": "one_cell", "methods": [info(m) for m in available_methods()],
                 "runtime": runtime_report(),
                 "pipelines": [p.provenance for p in registry.values()], "unavailable_bundles": failures,
-                "outputs": OUTPUTS, "limits": {"max_pixels": max_pixels, "max_bytes": max_bytes, "max_methods": max_methods}}
+                "outputs": OUTPUTS, "limits": {"max_pixels": max_pixels, "max_bytes": max_bytes, "max_methods": max_methods},
+                "recording": recorder is not None}
 
     @router.post("/segmentation_2D/qa_ensemble")
     def run(image: UploadFile, metadata: str = Form()):
@@ -155,5 +191,29 @@ def create_router(methods, lock: RLock, pipelines=None):
             raise HTTPException(422, str(exc)) from exc
         result = service.run(raw, request)
         return Response(result, media_type="application/zip", headers={"Content-Disposition": 'attachment; filename="labkit-qa-result.zip"'})
+
+    @router.post("/segmentation_2D/qa_ensemble/feedback")
+    def feedback(run_id: str = Form(), action: str = Form("applied"), mask: UploadFile | None = None):
+        """Record what the user kept for a run: the applied/edited mask in the same context-ROI coordinates."""
+        if recorder is None:
+            raise HTTPException(409, "Training records are disabled on this server (LABKIT_RECORD_DIR)")
+        if action not in ACTIONS:
+            raise HTTPException(422, f"action must be one of {', '.join(ACTIONS)}")
+        array = None
+        if mask is not None:
+            payload = mask.file.read(max_bytes + 1)
+            if len(payload) > max_bytes:
+                raise HTTPException(413, "Mask upload exceeds the configured byte limit")
+            try:
+                array = decode_image(payload, max_pixels)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+        try:
+            recorder.feedback(run_id, action, array)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return {"status": "OK", "run_id": run_id, "action": action}
 
     return router

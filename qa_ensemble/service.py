@@ -17,14 +17,16 @@ logger = logging.getLogger(__name__)
 
 
 class EnsembleService:
-    def __init__(self, segment, pipelines, method_info, lock):
+    def __init__(self, segment, pipelines, method_info, lock, recorder=None):
         self.segment = segment
         self.pipelines = pipelines
         self.method_info = method_info
         self.lock = lock
+        self.recorder = recorder
 
     def run(self, image, request):
         pipeline = self.pipelines[request.pipeline_id]
+        run_id = uuid4().hex
         started = perf_counter()
         source_results, candidates, statuses = {}, {}, []
         # This lock must also protect the original single-method endpoints.
@@ -68,8 +70,15 @@ class EnsembleService:
             overall = "single_candidate" if not errors and not stage_errors else "partial"
         else:
             overall = "partial" if errors or stage_errors else "ok"
+        recorded = False
+        if self.recorder is not None and candidates:
+            try:
+                self.recorder.save(run_id, image, request, result.get("candidate_masks", candidates), result.get("scores", []))
+                recorded = True
+            except Exception as exc:  # recording must never fail the user's request
+                logger.warning("Training record for %s was not saved: %s", run_id, exc)
         manifest = {
-            "schema_version": 1, "run_id": uuid4().hex, "image_id": request.image_id,
+            "schema_version": 1, "run_id": run_id, "recorded": recorded, "image_id": request.image_id,
             "status": overall, "region": request.region.model_dump(),
             "roi_shape_yx": list(image.shape), "mask_coordinates": "context_roi",
             "coordinate_space": request.coordinate_space, "view_to_source_affine": request.view_to_source_affine,

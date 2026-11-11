@@ -29,12 +29,14 @@ class SegmentationMethods:
         and return them as a map (dict) between method name and its file.
         '''
 
-        methods = utils.list_models_files(methods_folder, 'torch')
         self.available_methods = {}
-
-        for m in methods:
-            model,net,_ = utils.filename_to_atoms(m)
-            self.available_methods[f"{net}.{model}"] = os.path.join(methods_folder, m)
+        # LABKIT_EXTRA_MODELS_DIR: further folders (os.pathsep-separated), e.g. fine-tuned
+        # models written by a training job, without copying the image's own markers.
+        folders = [methods_folder] + [f for f in os.getenv("LABKIT_EXTRA_MODELS_DIR", "").split(os.pathsep) if f]
+        for folder in folders:
+            for m in utils.list_models_files(folder, 'torch'):
+                model,net,_ = utils.filename_to_atoms(m)
+                self.available_methods[f"{net}.{model}"] = os.path.join(folder, m)
 
         self.available_methods["fakenet.square"] = "invalid_path"
 

@@ -31,3 +31,5 @@ qa-bundles/
 runtime-cache/
 runtime/
 /qa-bundles
+deploy/lexis/silver-truth-*-src/
+*.sif

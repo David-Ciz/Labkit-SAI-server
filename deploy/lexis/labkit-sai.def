@@ -1,0 +1,33 @@
+# Apptainer image for LEXIS (Karolina, NVIDIA/CUDA). Build on a Linux machine with Docker:
+#
+#   docker build -t labkit-sai:gpu .                       # repository root, existing Dockerfile
+#   # train mode only: the ranker/fusion trainers from the silver-truth research code
+#   cp -r /path/to/silver-truth-candidate-context-v2/src deploy/lexis/silver-truth-v2-src
+#   cp -r /path/to/silver-truth/src deploy/lexis/silver-truth-main-src
+#   # installed QA bundles (qa-bundles/ is git-ignored): copy the ones to ship into ./qa-bundles
+#   apptainer build labkit-sai.sif deploy/lexis/labkit-sai.def
+#
+# Copy labkit-sai.sif to project storage and point LABKIT_SIF / the engine's ImagePath at it.
+# Model weights are not baked in: they download into the bound cache (LABKIT_CACHE) on first use.
+Bootstrap: docker-daemon
+From: labkit-sai:gpu
+
+%files
+    server-MODELS /app/server-MODELS
+    scripts /app/scripts
+    deploy/lexis /app/deploy/lexis
+    qa-bundles /app/qa-bundles
+    deploy/lexis/silver-truth-v2-src /opt/silver-truth/v2/src
+    deploy/lexis/silver-truth-main-src /opt/silver-truth/main/src
+
+%environment
+    export SILVER_TRUTH_SRC=/opt/silver-truth/v2/src:/opt/silver-truth/main/src
+    export LABKIT_QA_BUNDLES=${LABKIT_QA_BUNDLES:-/app/qa-bundles}
+    export LABKIT_DEVICE=${LABKIT_DEVICE:-cuda}
+    export LABKIT_QA_DEVICE=${LABKIT_QA_DEVICE:-cuda}
+
+%runscript
+    exec /app/entrypoint.sh "$@"
+
+%labels
+    org.opencontainers.image.title Labkit-SAI server and LEXIS batch job

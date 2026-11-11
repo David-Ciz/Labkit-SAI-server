@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Body, Response, Depends, Header
+from fastapi import FastAPI, HTTPException, Body, Response, Depends, Header, Request
 from typing import Annotated, Optional
 from pathlib import Path
 import secrets
@@ -23,6 +23,9 @@ import utils
 # Other deployments continue to read their existing secret file.
 SECRET_FILE = Path(__file__).resolve().parent / "secret.txt"
 LOCAL_TEST_KEY = os.getenv("LABKIT_LOCAL_TEST_KEY")
+TOKEN_FILE = os.getenv("LABKIT_TOKEN_FILE")  # HPC engines: token in a private file
+if TOKEN_FILE:
+    LOCAL_TEST_KEY = Path(TOKEN_FILE).read_text(encoding="utf-8")
 if LOCAL_TEST_KEY is not None:
     API_TOKEN = LOCAL_TEST_KEY.strip()
 else:
@@ -34,7 +37,15 @@ if not API_TOKEN:
     sys.exit("API token is empty")
 
 
-async def verify_token(x_api_token: Annotated[Optional[str], Header()] = None):
+# Liveness for HPC serving (the LEXIS inference service probes /metrics through its
+# tunnel without our token). Opt-in; it reveals only that the server is up.
+PUBLIC_METRICS = os.getenv("LABKIT_PUBLIC_METRICS", "") == "1"
+STARTED = time.time()
+
+
+async def verify_token(request: Request, x_api_token: Annotated[Optional[str], Header()] = None):
+    if PUBLIC_METRICS and request.url.path == "/metrics":
+        return
     # constant-time comparison, avoids timing side channel
     if x_api_token is None or not secrets.compare_digest(x_api_token, API_TOKEN):
         # 404 instead of 401/403 => unauthenticated clients learn nothing
@@ -60,6 +71,13 @@ app = FastAPI(
 @app.get("/")
 async def handle_root():
     return {"Welcome message": "Hello World. This is a small server of 2D cell segmentation models."}
+
+
+@app.get("/metrics")
+async def metrics():
+    # Prometheus text format; enough for a liveness probe.
+    body = f"labkit_up 1\nlabkit_uptime_seconds {time.time() - STARTED:.0f}\n"
+    return Response(content=body, media_type="text/plain; version=0.0.4")
 
 
 @app.get("/runtime")

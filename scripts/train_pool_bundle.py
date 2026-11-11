@@ -15,6 +15,13 @@ images, same segmenters, same prompting. This command
    original recipes, using out-of-fold QA scores,
 4. exports a new frozen bundle for the server's qa-bundles directory.
 
+Alternatively, --records trains from what users actually did in Labkit: a server
+started with LABKIT_RECORD_DIR stores every candidate of each interactive request,
+and the client's feedback call stores the mask the user applied. Those candidates
+are reused as they are (no server needed), cropped 256x256 around the request's
+anchor exactly as FrozenPipeline.run crops them; the applied mask is the reference.
+Only records whose request included every --methods entry are used.
+
 Example:
   python scripts/train_pool_bundle.py --images imgs/ --labels labels/ \
       --server http://127.0.0.1:8003 --token 1234 \
@@ -53,6 +60,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from qa_ensemble.frozen import Jaccard, make_features, rank_candidates, centered_crop  # noqa: E402
 from qa_ensemble.contracts import RunRequest  # noqa: E402
+from qa_ensemble.records import load_records  # noqa: E402
 
 SIZE = 256
 SUPPORT = ["ranker_cluster_full_boundary_contrast_rank", "ranker_cluster_rect_boundary_contrast_rank",
@@ -112,17 +120,78 @@ def collect_cells(images: Path, labels: Path, per_image: int, min_area: int, see
     return pd.DataFrame(rows), raws, refs
 
 
+def collect_records(root: Path, methods, min_area: int):
+    """Cells, crops and candidates from interactive-session records (see qa_ensemble.records)."""
+    rows, raws, refs, masks, status = [], {}, {}, {}, []
+    groups, skipped = {}, {"methods": 0, "small": 0}
+    for run_id, request, image, final, candidates in load_records(root):
+        if not set(methods) <= set(request["methods"]):
+            skipped["methods"] += 1
+            continue
+        if image.ndim != 2 or final.shape != image.shape:
+            continue
+        region = request["region"]
+        x0, y0, x1, y1 = region["target_box_xyxy"]
+        point = region.get("target_point_xy") or [(x0 + x1 - 1) // 2, (y0 + y1 - 1) // 2]
+        cx, cy = point
+        ref = crop(final.astype(np.uint8), cy, cx) > 0
+        if ref.sum() < min_area:
+            skipped["small"] += 1
+            continue
+        ox, oy = cx - SIZE // 2, cy - SIZE // 2
+        box = [int(np.clip(x0 - ox, 0, SIZE)), int(np.clip(y0 - oy, 0, SIZE)),
+               int(np.clip(x1 - ox, 0, SIZE)), int(np.clip(y1 - oy, 0, SIZE))]
+        raws[run_id] = crop(image, cy, cx).astype(np.float32)
+        refs[run_id] = ref
+        for method in methods:
+            ok = method in candidates
+            if ok:
+                masks[(run_id, method)] = crop(candidates[method].astype(np.uint8), cy, cx) > 0
+            status.append(dict(cell_id=run_id, method=method, status="ok" if ok else "failed", error=""))
+        # The source image is the grouping unit for out-of-fold and inner splits.
+        image_id = request.get("image_id", run_id)
+        groups.setdefault(image_id, len(groups))
+        rows.append(dict(cell_id=run_id, image=image_id, group=groups[image_id], label=1,
+                         box=box, point=[cx - ox, cy - oy]))
+    log(f"records: {len(rows)} usable; skipped {skipped['methods']} with a different method set, {skipped['small']} tiny masks")
+    if not rows:
+        raise SystemExit("No usable records: send feedback with the applied mask for runs using all --methods")
+    cells = pd.DataFrame(rows)
+    if len(groups) == 1 and len(cells) > 1:
+        # Clients that do not name the source image (e.g. "labkit-captured-view") give no grouping;
+        # fall back to one group per record. Cells of one image may then share folds' sides.
+        log(f"records: all from image_id {next(iter(groups))!r}; grouping per record instead (weaker split)")
+        cells["group"] = range(len(cells))
+    return cells, raws, refs, masks, pd.DataFrame(status)
+
+
 def generate_candidates(cells, raws, args, cache: Path):
-    """Use the server's production route; candidate_masks are already target-matched."""
+    """Use the server's production route; candidate_masks are already target-matched.
+
+    With --oof-method NAME=TEMPLATE, the candidate for NAME comes from the model
+    TEMPLATE.format(fold=...) of the cell's image fold (a model not trained on that
+    image), so QA/fusion never learn from a fine-tuned model's training images.
+    """
     cache.mkdir(parents=True, exist_ok=True)
     masks, status = {}, []
-    for i, (cid, box, point) in enumerate(zip(cells.cell_id, cells.box, cells.point)):
+    alias, fold_of = {}, {}
+    if args.oof_method:
+        name, _, template = args.oof_method.partition("=")
+        fold_of = json.loads(Path(args.fold_of).read_text())
+    for i, (cid, image, box, point) in enumerate(zip(cells.cell_id, cells.image, cells.box, cells.point)):
+        requested = list(args.methods)
+        if args.oof_method:
+            if image not in fold_of:
+                raise SystemExit(f"--fold-of has no fold for {image}")
+            served = template.format(fold=fold_of[image])
+            requested = [served if m == name else m for m in requested]
+            alias = {served: name}
         target = cache / f"{cid}.zip"
         if not target.exists():
             buffer = io.BytesIO()
             tifffile.imwrite(buffer, raws[cid])
             metadata = {"schema_version": 1, "image_id": cid[:256], "pipeline_id": args.request_pipeline,
-                        "methods": args.methods, "return": ["candidate_masks", "qa_scores"],
+                        "methods": requested, "return": ["candidate_masks", "qa_scores"],
                         "region": {"original_shape_yx": [SIZE, SIZE], "target_box_xyxy": box,
                                    "target_point_xy": point}}
             response = requests.post(args.server.rstrip("/") + "/segmentation_2D/qa_ensemble",
@@ -135,8 +204,9 @@ def generate_candidates(cells, raws, args, cache: Path):
             manifest = json.loads(archive.read("manifest.json"))
             ok = [m["method"] for m in manifest["methods"] if m["status"] == "ok"]
             for j, method in enumerate(ok):
-                masks[(cid, method)] = tifffile.imread(io.BytesIO(archive.read(f"candidate_masks/{j:03d}.tif"))) > 0
-            status += [dict(cell_id=cid, method=m["method"], status=m["status"], error=m.get("error", "")) for m in manifest["methods"]]
+                masks[(cid, alias.get(method, method))] = tifffile.imread(io.BytesIO(archive.read(f"candidate_masks/{j:03d}.tif"))) > 0
+            status += [dict(cell_id=cid, method=alias.get(m["method"], m["method"]), status=m["status"],
+                            error=m.get("error", "")) for m in manifest["methods"]]
         if (i + 1) % 25 == 0:
             log(f"candidates: {i + 1}/{len(cells)} cells")
     return masks, pd.DataFrame(status)
@@ -224,10 +294,11 @@ class QATrainer:
 # ---------------------------------------------------------------- main
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--images", type=Path, required=True)
-    p.add_argument("--labels", type=Path, required=True)
-    p.add_argument("--server", required=True)
-    p.add_argument("--token", required=True)
+    p.add_argument("--images", type=Path, help="labelled-image mode: grayscale TIFFs")
+    p.add_argument("--labels", type=Path, help="labelled-image mode: instance-label TIFFs with the same names")
+    p.add_argument("--records", type=Path, help="record mode: LABKIT_RECORD_DIR of a server (no --server needed)")
+    p.add_argument("--server", help="labelled-image mode: running Labkit-SAI server URL")
+    p.add_argument("--token", help="labelled-image mode: server API token")
     p.add_argument("--methods", required=True, help="comma-separated server method IDs (your pool)")
     p.add_argument("--base-bundle", type=Path, required=True, help="bundle providing QA init and recipes")
     p.add_argument("--silver-truth-src", type=Path, nargs="+", required=True,
@@ -243,11 +314,17 @@ def main():
     p.add_argument("--box-size", type=int, default=96, help="--prompt fixed only (evaluated: 96)")
     p.add_argument("--raw-encoding", choices=["preserve", "minmax_uint8"],
                    help="QA intensity encoding (default: the base bundle's); use minmax_uint8 for 16-bit or float images")
+    p.add_argument("--oof-method", help="NAME=TEMPLATE: serve NAME's candidates from TEMPLATE.format(fold=<image fold>)")
+    p.add_argument("--fold-of", help="JSON file mapping image file name -> fold (with --oof-method)")
     p.add_argument("--max-epochs", type=int, default=30)
     p.add_argument("--seed", type=int, default=13)
     p.add_argument("--timeout", type=float, default=600)
     args = p.parse_args()
     args.methods = [m for m in args.methods.split(",") if m]
+    if args.records is None and not all((args.images, args.labels, args.server, args.token)):
+        p.error("Give --records, or all of --images --labels --server --token")
+    if args.oof_method and (args.records is not None or not args.fold_of):
+        p.error("--oof-method needs labelled-image mode and --fold-of")
     if args.out.exists():
         p.error("Output bundle exists; choose a new directory")
     work = args.work or args.out.with_name(args.out.name + ".work")
@@ -262,13 +339,17 @@ def main():
     from silver_truth.evaluation.cluster_pairwise_ranker import ClusterPairwiseRankerConfig, train_cluster_pairwise_ranker
 
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-    cells, raws, refs = collect_cells(args.images, args.labels, args.cells_per_image, args.min_area, args.seed)
-    if args.prompt == "fixed":
-        half = args.box_size // 2
-        cells["box"] = [[SIZE // 2 - half, SIZE // 2 - half, SIZE // 2 + half, SIZE // 2 + half]] * len(cells)
-        cells["point"] = [[SIZE // 2, SIZE // 2]] * len(cells)
-    log(f"{len(cells)} labelled cells from {cells.image.nunique()} images")
-    masks, status = generate_candidates(cells, raws, args, work / "candidates")
+    if args.records is not None:
+        cells, raws, refs, masks, status = collect_records(args.records, args.methods, args.min_area)
+        args.prompt = "recorded"
+    else:
+        cells, raws, refs = collect_cells(args.images, args.labels, args.cells_per_image, args.min_area, args.seed)
+        if args.prompt == "fixed":
+            half = args.box_size // 2
+            cells["box"] = [[SIZE // 2 - half, SIZE // 2 - half, SIZE // 2 + half, SIZE // 2 + half]] * len(cells)
+            cells["point"] = [[SIZE // 2, SIZE // 2]] * len(cells)
+        log(f"{len(cells)} labelled cells from {cells.image.nunique()} images")
+        masks, status = generate_candidates(cells, raws, args, work / "candidates")
     status.to_csv(work / "candidate-status.csv", index=False)
     rows = [dict(cell_id=c, method=m, true_iou=float((mk & refs[c]).sum() / max(1, (mk | refs[c]).sum())))
             for (c, m), mk in masks.items()]
@@ -340,8 +421,10 @@ def main():
     profile["pipeline_id"] = args.pipeline_id
     profile["training_exposure"] = {
         "status": "pool-specific training with scripts/train_pool_bundle.py",
+        "source": "interactive records" if args.records is not None else "labelled images",
         "base_bundle": manifest["pipeline_id"], "methods": args.methods, "prompt": args.prompt,
         "box_size": args.box_size if args.prompt == "fixed" else None,
+        "out_of_fold_method": args.oof_method,
         "images": int(cells.image.nunique()), "cells": int(cand.cell_id.nunique()), "candidates": int(len(cand)),
         "candidate_mean_iou": cand.groupby("method").true_iou.mean().round(4).to_dict(),
         "qa_inner_validation_mse": inner_mse, "seed": args.seed}
